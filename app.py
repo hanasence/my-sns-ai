@@ -157,7 +157,7 @@ if st.button("🚀 전체 콘텐츠 생성하기", type="primary", use_container
     else:
         try:
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.0-flash')
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
             
             with st.spinner('AI가 콘텐츠 생성 중... (약 30초)'):
                 extra = f"\n특별요청: {custom_note}" if custom_note else ""
