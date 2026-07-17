@@ -226,6 +226,11 @@ if st.button("🚀 전체 콘텐츠 생성하기", type="primary", use_container
                 result = response.text
                 
                 st.success("✅ 생성 완료!")
+                
+                # 🔍 디버깅용 - AI 원본 응답 확인
+                with st.expander("🔍 AI 원본 응답 확인 (디버깅용)"):
+                    st.text(result)
+                
                 st.markdown("---")
                 
                 tab_names = ["🎴 카드뉴스 (10장)"]
