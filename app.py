@@ -7,8 +7,52 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 import io
 import zipfile
+import os
+import urllib.request
 
 st.set_page_config(page_title="원클릭 SNS 콘텐츠 마스터", layout="wide", page_icon="🚀")
+
+# ─────────────────────────────────────────
+# 🔤 폰트 자동 다운로드
+# ─────────────────────────────────────────
+@st.cache_resource
+def load_fonts():
+    font_dir = "fonts"
+    os.makedirs(font_dir, exist_ok=True)
+    
+    regular = os.path.join(font_dir, "NanumGothic.ttf")
+    bold    = os.path.join(font_dir, "NanumGothicBold.ttf")
+    
+    if not os.path.exists(regular):
+        try:
+            urllib.request.urlretrieve(
+                "https://github.com/googlefonts/nanumfont/raw/main/fonts/NanumGothic.ttf",
+                regular
+            )
+        except:
+            regular = None
+    
+    if not os.path.exists(bold):
+        try:
+            urllib.request.urlretrieve(
+                "https://github.com/googlefonts/nanumfont/raw/main/fonts/NanumGothicBold.ttf",
+                bold
+            )
+        except:
+            bold = None
+    
+    return regular, bold
+
+FONT_REGULAR, FONT_BOLD = load_fonts()
+
+def get_font(size, bold=False):
+    try:
+        path = FONT_BOLD if bold else FONT_REGULAR
+        if path and os.path.exists(path):
+            return ImageFont.truetype(path, size)
+    except:
+        pass
+    return ImageFont.load_default()
 
 # ─────────────────────────────────────────
 # 🎨 템플릿 세트 정의
@@ -24,322 +68,330 @@ def hex_to_rgb(h):
     h = h.lstrip('#')
     return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
 
-def get_font(size, bold=False):
-    try:
-        path = "/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf" if bold else "/usr/share/fonts/truetype/nanum/NanumGothic.ttf"
-        return ImageFont.truetype(path, size)
-    except:
-        return ImageFont.load_default()
-
-def wrap_text(text, font, max_width, draw):
+def wrap_text(draw, text, font, max_width):
     lines, current = [], ""
-    for char in text:
+    for char in str(text):
         test = current + char
-        if draw.textbbox((0,0), test, font=font)[2] > max_width:
-            if current:
-                lines.append(current)
+        try:
+            w = draw.textbbox((0,0), test, font=font)[2]
+        except:
+            w = len(test) * 20
+        if w > max_width and current:
+            lines.append(current)
             current = char
         else:
             current = test
     if current:
         lines.append(current)
-    return lines
+    return lines if lines else [str(text)]
 
-def draw_text_centered(draw, text, y, font, color, W, max_w, line_gap=8):
-    lines = wrap_text(text, font, max_w, draw)
+def draw_text_center(draw, text, y, font, color, W, max_w, gap=10):
+    if not text:
+        return y
+    lines = wrap_text(draw, text, font, max_w)
     for i, line in enumerate(lines):
-        bb = draw.textbbox((0,0), line, font=font)
-        x = (W - (bb[2]-bb[0])) / 2
-        draw.text((x, y + i*(bb[3]-bb[1]+line_gap)), line, font=font, fill=color)
-    return lines
+        try:
+            bb = draw.textbbox((0,0), line, font=font)
+            tw = bb[2] - bb[0]
+            th = bb[3] - bb[1]
+        except:
+            tw, th = len(line)*20, 30
+        x = max(0, (W - tw) / 2)
+        draw.text((x, y + i*(th+gap)), line, font=font, fill=color)
+    try:
+        bb = draw.textbbox((0,0), lines[0], font=font)
+        th = bb[3] - bb[1]
+    except:
+        th = 30
+    return y + len(lines) * (th + gap)
 
-def draw_text_left(draw, text, x, y, font, color, max_w, line_gap=8):
-    lines = wrap_text(text, font, max_w, draw)
+def draw_text_left(draw, text, x, y, font, color, max_w, gap=10):
+    if not text:
+        return y
+    lines = wrap_text(draw, text, font, max_w)
     for i, line in enumerate(lines):
-        bb = draw.textbbox((0,0), line, font=font)
-        draw.text((x, y + i*(bb[3]-bb[1]+line_gap)), line, font=font, fill=color)
-    return lines
+        try:
+            bb = draw.textbbox((0,0), line, font=font)
+            th = bb[3] - bb[1]
+        except:
+            th = 30
+        draw.text((x, y + i*(th+gap)), line, font=font, fill=color)
+    try:
+        bb = draw.textbbox((0,0), lines[0], font=font)
+        th = bb[3] - bb[1]
+    except:
+        th = 30
+    return y + len(lines) * (th + gap)
+
+def make_base(bg_image, bg_rgb, W=1080, H=1080):
+    if bg_image:
+        base = bg_image.copy().convert('RGB')
+        base = base.resize((W, H), Image.LANCZOS)
+    else:
+        base = Image.new('RGB', (W, H), bg_rgb)
+    return base
 
 def add_overlay(img, x1, y1, x2, y2, color_rgb, alpha=180):
     overlay = Image.new('RGBA', img.size, (0,0,0,0))
     d = ImageDraw.Draw(overlay)
     d.rectangle([x1, y1, x2, y2], fill=(*color_rgb, alpha))
-    return Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+    result = Image.alpha_composite(img.convert('RGBA'), overlay)
+    return result.convert('RGB')
 
-def add_rounded_box(draw, x1, y1, x2, y2, fill_rgb, alpha=200, radius=20):
-    overlay = Image.new('RGBA', (1080,1080), (0,0,0,0))
+def add_rounded_overlay(img, x1, y1, x2, y2, color_rgb, alpha=200, radius=24):
+    overlay = Image.new('RGBA', img.size, (0,0,0,0))
     d = ImageDraw.Draw(overlay)
-    d.rounded_rectangle([x1,y1,x2,y2], radius=radius, fill=(*fill_rgb, alpha))
-    return overlay
+    d.rounded_rectangle([x1, y1, x2, y2], radius=radius, fill=(*color_rgb, alpha))
+    result = Image.alpha_composite(img.convert('RGBA'), overlay)
+    return result.convert('RGB')
 
 # ─────────────────────────────────────────
-# 🖼️ 10장 각각 최적 구도 카드 생성
+# 🖼️ 10장 카드 생성
 # ─────────────────────────────────────────
-def create_card_image(card_num, card, template_set, bg_image=None):
+def create_card(card_num, card, template_set, bg_image=None):
     W, H = 1080, 1080
-    colors = TEMPLATE_SETS[template_set]
-    bg_rgb   = hex_to_rgb(colors["bg"])
-    txt_rgb  = hex_to_rgb(colors["text"])
-    pt_rgb   = hex_to_rgb(colors["point"])
-    sub_rgb  = hex_to_rgb(colors["sub_bg"])
+    colors  = TEMPLATE_SETS[template_set]
+    bg_rgb  = hex_to_rgb(colors["bg"])
+    txt_rgb = hex_to_rgb(colors["text"])
+    pt_rgb  = hex_to_rgb(colors["point"])
+    sub_rgb = hex_to_rgb(colors["sub_bg"])
+    white   = (255, 255, 255)
+    
+    title = str(card.get("큰제목", "") or "")
+    sub   = str(card.get("부제목", "") or "")
+    body  = str(card.get("본문",   "") or "")
 
-    title = card.get("큰제목", "")
-    sub   = card.get("부제목", "")
-    body  = card.get("본문", "")
-
-    # 배경 이미지 or 단색
-    if bg_image:
-        base = bg_image.copy().resize((W, H)).convert('RGB')
-    else:
-        base = Image.new('RGB', (W, H), bg_rgb)
-
-    # ════════════════════════════════
-    # 1장: 표지 (1:9 법칙)
-    # ════════════════════════════════
+    # ══════════════════════════
+    # 1장: 표지
+    # ══════════════════════════
     if card_num == 1:
-        img = base.copy()
-        # 하단 45% 반투명 오버레이
-        img = add_overlay(img, 0, int(H*0.55), W, H, bg_rgb, alpha=210)
+        img = make_base(bg_image, bg_rgb)
+        img = add_overlay(img, 0, int(H*0.52), W, H, bg_rgb, alpha=220)
         draw = ImageDraw.Draw(img)
         # 포인트 라인
-        draw.rectangle([(80, int(H*0.57)), (200, int(H*0.57)+6)], fill=pt_rgb)
+        draw.rectangle([(80, int(H*0.54)), (220, int(H*0.54)+5)], fill=pt_rgb)
         # 큰 제목
-        f_title = get_font(80, bold=True)
-        draw_text_centered(draw, title, int(H*0.60), f_title, txt_rgb, W, W-120)
+        f1 = get_font(72, bold=True)
+        draw_text_center(draw, title, int(H*0.57), f1, txt_rgb, W, W-120)
         # 부제목
-        f_sub = get_font(36)
-        draw_text_centered(draw, sub, int(H*0.78), f_sub, pt_rgb, W, W-160)
-        # 카드 번호
-        f_num = get_font(26)
-        draw.text((W-80, H-50), "1/10", font=f_num, fill=pt_rgb)
+        f2 = get_font(36)
+        draw_text_center(draw, sub, int(H*0.78), f2, pt_rgb, W, W-160)
+        # 페이지
+        draw.text((W-120, H-60), "1/10", font=get_font(28), fill=pt_rgb)
 
-    # ════════════════════════════════
-    # 2장: 문제제기 (카톡 스타일)
-    # ════════════════════════════════
+    # ══════════════════════════
+    # 2장: 문제제기 (카톡)
+    # ══════════════════════════
     elif card_num == 2:
-        img = Image.new('RGB', (W, H), (254, 229, 0))  # 카톡 노란 배경
+        img = Image.new('RGB', (W, H), (254, 229, 0))
         draw = ImageDraw.Draw(img)
-        # 상단 헤더
-        draw.rectangle([(0,0),(W,100)], fill=(230,207,0))
-        f_header = get_font(36, bold=True)
-        draw_text_centered(draw, "💬 " + (sub or "많이들 물어보시는 질문"), 32, f_header, (50,50,50), W, W-80)
-        # 말풍선들
+        # 헤더
+        draw.rectangle([(0,0),(W,110)], fill=(230,207,0))
+        draw.text((40, 35), "💬 카카오톡", font=get_font(40, bold=True), fill=(50,50,50))
+        # 제목
+        f_t = get_font(48, bold=True)
+        draw_text_center(draw, title, 130, f_t, (50,50,50), W, W-80)
+        # 말풍선
         bubbles = [
-            (60,  140, title or "이거 저도 해당되나요?", False),
-            (300, 300, body or "저도 궁금했어요!", False),
-            (60,  460, "저는 잘 몰라서요 ㅠㅠ", False),
-            (250, 600, "저도요! 알려주세요!", False),
+            (60,  280, sub  or "이거 저도 해당되나요? 😮"),
+            (200, 420, body or "저도 궁금했어요!"),
+            (60,  560, "저는 잘 몰라서요 ㅠㅠ"),
+            (200, 680, "저도요! 알려주세요!"),
         ]
-        for bx, by, btxt, is_right in bubbles:
-            f_b = get_font(34)
-            bb = draw.textbbox((0,0), btxt, font=f_b)
-            bw = min(bb[2]-bb[0]+50, W-120)
-            bh = bb[3]-bb[1]+36
-            if is_right:
-                bx = W - bw - 60
-            draw.rounded_rectangle([bx, by, bx+bw, by+bh], radius=22, fill="white")
+        for bx, by, btxt in bubbles:
+            f_b = get_font(32)
+            try:
+                bb = draw.textbbox((0,0), btxt, font=f_b)
+                bw = min(bb[2]-bb[0]+50, W-140)
+                bh = bb[3]-bb[1]+36
+            except:
+                bw, bh = 400, 60
+            draw.rounded_rectangle([bx, by, bx+bw, by+bh], radius=20, fill="white")
             draw.text((bx+25, by+18), btxt, font=f_b, fill="#333333")
-        # 하단 시간
-        f_time = get_font(28)
-        draw.text((40, H-70), "오후 3:45", font=f_time, fill="#888888")
-        draw.text((W-80, H-50), "2/10", font=get_font(26), fill="#888888")
+        draw.text((40, H-70), "오후 3:45", font=get_font(28), fill="#888888")
+        draw.text((W-120, H-60), "2/10", font=get_font(28), fill="#888888")
 
-    # ════════════════════════════════
-    # 3장: 원인분석 (A vs B 좌우 대칭)
-    # ════════════════════════════════
+    # ══════════════════════════
+    # 3장: 원인분석 (A vs B)
+    # ══════════════════════════
     elif card_num == 3:
         img = Image.new('RGB', (W, H), bg_rgb)
         draw = ImageDraw.Draw(img)
-        # 좌측 (❌ 부정)
-        draw.rectangle([(0,0),(W//2, H)], fill=hex_to_rgb("#F0F0F0"))
-        # 우측 (✅ 긍정)
+        # 좌측 (❌)
+        draw.rectangle([(0,0),(W//2, H)], fill=hex_to_rgb("#EEEEEE"))
+        # 우측 (✅)
         draw.rectangle([(W//2,0),(W, H)], fill=pt_rgb)
-        # 중앙 구분선
-        draw.rectangle([(W//2-3,0),(W//2+3,H)], fill="#FFFFFF")
-        # 중앙 VS 원
-        draw.ellipse([(W//2-45, H//2-45),(W//2+45, H//2+45)], fill="white")
-        f_vs = get_font(40, bold=True)
-        draw.text((W//2-25, H//2-25), "VS", font=f_vs, fill=pt_rgb)
-        # 상단 제목
-        f_title = get_font(52, bold=True)
-        draw_text_centered(draw, title or "이런 차이가 있어요!", 60, f_title, txt_rgb, W, W-80)
-        # 좌측 텍스트
-        f_side = get_font(44, bold=True)
-        draw.text((W//4-80, int(H*0.25)), "❌", font=get_font(60), fill="#FF4444")
-        f_content = get_font(34)
-        left_text = sub or "모르는 사람"
-        draw_text_centered(draw, left_text, int(H*0.40), f_content, hex_to_rgb("#555555"), W//2, W//2-60)
-        # 우측 텍스트
-        draw.text((W//4*3-40, int(H*0.25)), "✅", font=get_font(60), fill="#FFFFFF")
-        right_text = body or "아는 사람"
-        draw_text_centered(draw, right_text, int(H*0.40), f_content, hex_to_rgb("#FFFFFF"), W, W//2-60)
+        # 구분선
+        draw.rectangle([(W//2-3,0),(W//2+3,H)], fill="white")
+        # 상단 제목 (배경)
+        draw.rectangle([(0,0),(W,130)], fill=bg_rgb)
+        f_t = get_font(52, bold=True)
+        draw_text_center(draw, title or "이런 차이가 있어요!", 35, f_t, txt_rgb, W, W-80)
+        # VS 원
+        cx, cy = W//2, H//2
+        draw.ellipse([(cx-50,cy-50),(cx+50,cy+50)], fill="white")
+        f_vs = get_font(36, bold=True)
+        draw.text((cx-25, cy-22), "VS", font=f_vs, fill=pt_rgb)
+        # 좌측
+        draw.text((W//4-30, 180), "❌", font=get_font(60), fill="#FF4444")
+        f_side = get_font(36)
+        draw_text_center(draw, sub or "모르는 사람", 280, f_side, hex_to_rgb("#555555"), W//2, W//2-60)
+        # 우측
+        draw.text((W//4*3-30, 180), "✅", font=get_font(60), fill="white")
+        draw_text_center(draw, body or "아는 사람", 280, f_side, white, W + W//2, W//2-60)
         # 하단
-        f_bottom = get_font(36, bold=True)
-        draw_text_centered(draw, "당신은 어느 쪽인가요?", int(H*0.88), f_bottom, txt_rgb, W, W-80)
-        draw.text((W-80, H-50), "3/10", font=get_font(26), fill=pt_rgb)
+        draw.rectangle([(0,H-120),(W,H)], fill=bg_rgb)
+        f_b = get_font(38, bold=True)
+        draw_text_center(draw, "당신은 어느 쪽인가요?", H-95, f_b, txt_rgb, W, W-80)
+        draw.text((W-120, H-60), "3/10", font=get_font(28), fill=pt_rgb)
 
-    # ════════════════════════════════
-    # 4장: 로드맵 (타임라인)
-    # ════════════════════════════════
+    # ══════════════════════════
+    # 4장: 로드맵
+    # ══════════════════════════
     elif card_num == 4:
-        img = base.copy()
-        img = add_overlay(img, 0, 0, W, H, bg_rgb, alpha=200)
+        img = make_base(bg_image, bg_rgb)
+        img = add_overlay(img, 0, 0, W, H, bg_rgb, alpha=210)
         draw = ImageDraw.Draw(img)
         # 제목
-        f_title = get_font(64, bold=True)
-        draw_text_centered(draw, title or "전체 흐름 한눈에!", 80, f_title, txt_rgb, W, W-80)
-        # 포인트 언더라인
-        draw.rectangle([(W//2-100, 160),(W//2+100, 166)], fill=pt_rgb)
-        # 타임라인 노드
-        steps = (body or "확인/신청/접수/완료").split('/')
-        steps = steps[:4] if len(steps) >= 4 else steps + ["완료"]*(4-len(steps))
-        node_y = int(H * 0.50)
-        node_xs = [200, 420, 660, 880]
-        # 연결선
-        draw.line([(node_xs[0], node_y), (node_xs[-1], node_y)], fill=pt_rgb, width=6)
+        f_t = get_font(60, bold=True)
+        draw_text_center(draw, title or "전체 흐름 한눈에!", 80, f_t, txt_rgb, W, W-80)
+        draw.rectangle([(W//2-80,170),(W//2+80,176)], fill=pt_rgb)
+        # 타임라인
+        steps = [s.strip() for s in body.split('/')][:4] if '/' in body else ["확인","신청","접수","완료"]
+        while len(steps) < 4:
+            steps.append("완료")
+        node_y = int(H*0.50)
+        node_xs = [180, 400, 650, 870]
+        draw.line([(node_xs[0], node_y),(node_xs[-1], node_y)], fill=pt_rgb, width=8)
         for i, (nx, step) in enumerate(zip(node_xs, steps)):
-            # 노드 원
-            draw.ellipse([(nx-45, node_y-45),(nx+45, node_y+45)], fill=pt_rgb)
-            draw.ellipse([(nx-35, node_y-35),(nx+35, node_y+35)], fill="white")
-            # 번호
-            f_node = get_font(40, bold=True)
-            num_str = str(i+1)
-            bb = draw.textbbox((0,0), num_str, font=f_node)
-            draw.text((nx-(bb[2]-bb[0])//2, node_y-(bb[3]-bb[1])//2), num_str, font=f_node, fill=pt_rgb)
-            # 단계명
-            f_step = get_font(32)
-            draw_text_centered(draw, step.strip(), node_y+60, f_step, txt_rgb, nx*2 if i==0 else W, 180)
-        # 하단 설명
-        f_sub = get_font(36)
-        draw_text_centered(draw, sub or "이제 하나씩 알려드릴게요!", int(H*0.78), f_sub, pt_rgb, W, W-120)
-        draw.text((W-80, H-50), "4/10", font=get_font(26), fill=pt_rgb)
+            draw.ellipse([(nx-48,node_y-48),(nx+48,node_y+48)], fill=pt_rgb)
+            draw.ellipse([(nx-38,node_y-38),(nx+38,node_y+38)], fill="white")
+            f_n = get_font(38, bold=True)
+            ns = str(i+1)
+            try:
+                bb = draw.textbbox((0,0), ns, font=f_n)
+                draw.text((nx-(bb[2]-bb[0])//2, node_y-(bb[3]-bb[1])//2), ns, font=f_n, fill=pt_rgb)
+            except:
+                draw.text((nx-10, node_y-15), ns, font=f_n, fill=pt_rgb)
+            f_s = get_font(30)
+            draw_text_center(draw, step, node_y+65, f_s, txt_rgb, W, 200)
+        f_sub = get_font(38)
+        draw_text_center(draw, sub or "이제 하나씩 알려드릴게요!", int(H*0.80), f_sub, pt_rgb, W, W-120)
+        draw.text((W-120, H-60), "4/10", font=get_font(28), fill=pt_rgb)
 
-    # ════════════════════════════════
-    # 5~7장: 솔루션 (이미지60% + 텍스트40%)
-    # ════════════════════════════════
+    # ══════════════════════════
+    # 5~7장: 솔루션
+    # ══════════════════════════
     elif card_num in [5, 6, 7]:
-        num_map = {5: ("①", "5"), 6: ("②", "6"), 7: ("③", "7")}
-        sol_num, page_num = num_map[card_num]
-        img = base.copy()
-        # 하단 40% 흰색 박스
-        img = add_overlay(img, 0, int(H*0.58), W, H, hex_to_rgb(colors["sub_bg"]), alpha=240)
+        sol_map = {5: ("①","5"), 6: ("②","6"), 7: ("③","7")}
+        sol_num, page_num = sol_map[card_num]
+        img = make_base(bg_image, bg_rgb)
+        # 하단 42% 텍스트 영역
+        img = add_overlay(img, 0, int(H*0.56), W, H, sub_rgb, alpha=245)
         draw = ImageDraw.Draw(img)
-        # 포인트 라인 (이미지/텍스트 경계)
-        draw.rectangle([(0, int(H*0.58)),(W, int(H*0.58)+6)], fill=pt_rgb)
-        # 솔루션 번호 (크게)
-        f_num_big = get_font(100, bold=True)
-        draw.text((60, int(H*0.58)+20), sol_num, font=f_num_big, fill=pt_rgb)
+        # 경계선
+        draw.rectangle([(0,int(H*0.56)),(W,int(H*0.56)+6)], fill=pt_rgb)
+        # 번호
+        f_big = get_font(90, bold=True)
+        draw.text((50, int(H*0.57)), sol_num, font=f_big, fill=pt_rgb)
         # 제목
-        f_title = get_font(56, bold=True)
-        draw_text_left(draw, title or f"솔루션 {sol_num}", 180, int(H*0.62), f_title, txt_rgb, W-220)
+        f_t = get_font(52, bold=True)
+        draw_text_left(draw, title, 180, int(H*0.60), f_t, txt_rgb, W-220)
         # 본문
-        f_body = get_font(34)
-        draw_text_left(draw, body or "구체적인 방법을 알려드릴게요.", 60, int(H*0.78), f_body, txt_rgb, W-120)
+        f_b = get_font(34)
+        draw_text_left(draw, body, 60, int(H*0.75), f_b, txt_rgb, W-120)
         # 부제목
-        f_sub = get_font(30)
-        draw_text_left(draw, sub or "", 60, int(H*0.88), f_sub, pt_rgb, W-120)
-        draw.text((W-80, H-50), f"{page_num}/10", font=get_font(26), fill=pt_rgb)
+        f_s = get_font(30)
+        draw_text_left(draw, sub, 60, int(H*0.88), f_s, pt_rgb, W-120)
+        draw.text((W-120, H-60), f"{page_num}/10", font=get_font(28), fill=pt_rgb)
 
-    # ════════════════════════════════
-    # 8장: 요약 (체크리스트) ⭐
-    # ════════════════════════════════
+    # ══════════════════════════
+    # 8장: 요약 (체크리스트)
+    # ══════════════════════════
     elif card_num == 8:
-        # 배경 흐리게
         if bg_image:
-            blurred = base.copy().filter(ImageFilter.GaussianBlur(radius=8))
+            blurred = make_base(bg_image, sub_rgb).filter(ImageFilter.GaussianBlur(12))
         else:
             blurred = Image.new('RGB', (W,H), sub_rgb)
-        img = blurred
-        # 중앙 흰색 박스
-        overlay = add_rounded_box(None, 60, 80, W-60, H-80, hex_to_rgb(colors["sub_bg"]), alpha=230, radius=30)
-        img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+        img = add_rounded_overlay(blurred, 50, 50, W-50, H-50, hex_to_rgb(colors["sub_bg"]), alpha=235, radius=30)
         draw = ImageDraw.Draw(img)
-        # 상단 제목
-        f_title = get_font(60, bold=True)
-        draw_text_centered(draw, "📌 " + (title or "지금까지 정리!"), 120, f_title, txt_rgb, W, W-120)
-        # 구분선
-        draw.rectangle([(120, 210),(W-120, 216)], fill=pt_rgb)
+        # 제목
+        f_t = get_font(56, bold=True)
+        draw_text_center(draw, "📌 " + (title or "지금까지 정리!"), 90, f_t, txt_rgb, W, W-120)
+        draw.rectangle([(100,180),(W-100,186)], fill=pt_rgb)
         # 체크리스트
-        items = body.split('/') if '/' in body else body.split('.')
-        items = [x.strip() for x in items if x.strip()][:4]
+        if '/' in body:
+            items = [x.strip() for x in body.split('/') if x.strip()]
+        elif '.' in body:
+            items = [x.strip() for x in body.split('.') if x.strip()]
+        else:
+            items = [body] if body else []
+        items = items[:4]
         if not items:
-            items = ["첫 번째 핵심 정보", "두 번째 핵심 정보", "세 번째 핵심 정보"]
-        f_check = get_font(38, bold=True)
-        f_check_body = get_font(30)
+            items = ["첫 번째 핵심", "두 번째 핵심", "세 번째 핵심"]
+        f_item = get_font(36, bold=True)
         for i, item in enumerate(items):
-            y_item = 260 + i * 150
-            # 체크박스
-            draw.rounded_rectangle([(80, y_item),(130, y_item+50)], radius=8, fill=pt_rgb)
-            f_ck = get_font(32, bold=True)
-            draw.text((90, y_item+8), "✓", font=f_ck, fill="white")
-            # 항목
-            draw_text_left(draw, item, 150, y_item, f_check, txt_rgb, W-200)
-        # 저장 유도 (핵심!)
-        draw.rectangle([(80, int(H*0.83)),(W-80, int(H*0.83)+4)], fill=pt_rgb)
+            y_i = 210 + i*160
+            draw.rounded_rectangle([(70,y_i),(125,y_i+55)], radius=8, fill=pt_rgb)
+            draw.text((80, y_i+8), "✓", font=get_font(34, bold=True), fill="white")
+            draw_text_left(draw, item, 145, y_i+8, f_item, txt_rgb, W-200)
+        # 저장 유도
+        draw.rectangle([(70,int(H*0.84)),(W-70,int(H*0.84)+4)], fill=pt_rgb)
         f_save = get_font(38, bold=True)
-        draw_text_centered(draw, "💾 저장하고 두고두고 봐요!", int(H*0.86), f_save, pt_rgb, W, W-100)
-        draw.text((W-80, H-50), "8/10", font=get_font(26), fill=pt_rgb)
+        draw_text_center(draw, "💾 저장하고 두고두고 봐요!", int(H*0.87), f_save, pt_rgb, W, W-100)
+        draw.text((W-120, H-60), "8/10", font=get_font(28), fill=pt_rgb)
 
-    # ════════════════════════════════
-    # 9장: 클로징 (킨포크 감성)
-    # ════════════════════════════════
+    # ══════════════════════════
+    # 9장: 클로징 (감성)
+    # ══════════════════════════
     elif card_num == 9:
-        img = base.copy()
-        # 전체 반투명 오버레이 (감성)
-        img = add_overlay(img, 0, 0, W, H, bg_rgb, alpha=160)
+        img = make_base(bg_image, bg_rgb)
+        img = add_overlay(img, 0, 0, W, H, bg_rgb, alpha=170)
         draw = ImageDraw.Draw(img)
         # 상단 포인트 라인
-        draw.rectangle([(W//2-60, 120),(W//2+60, 126)], fill=pt_rgb)
-        # 명언 (큰 따옴표)
-        f_quote = get_font(120, bold=True)
-        draw.text((80, int(H*0.25)), '"', font=f_quote, fill=pt_rgb)
-        # 명언 텍스트
-        f_title = get_font(52, bold=True)
-        draw_text_centered(draw, title or "작은 정보 하나가\n큰 변화를 만듭니다", int(H*0.38), f_title, txt_rgb, W, W-160)
+        draw.rectangle([(W//2-60,100),(W//2+60,106)], fill=pt_rgb)
+        # 큰 따옴표
+        f_q = get_font(140, bold=True)
+        draw.text((60, int(H*0.22)), '"', font=f_q, fill=pt_rgb)
+        # 명언
+        f_t = get_font(50, bold=True)
+        draw_text_center(draw, title or "작은 정보 하나가 큰 변화를 만듭니다", int(H*0.38), f_t, txt_rgb, W, W-160)
         # 닫는 따옴표
-        draw.text((W-120, int(H*0.62)), '"', font=f_quote, fill=pt_rgb)
-        # 출처
-        draw.rectangle([(W//2-80, int(H*0.72)),(W//2+80, int(H*0.72)+3)], fill=pt_rgb)
-        f_source = get_font(32)
-        draw_text_centered(draw, sub or "- 오늘의 한마디", int(H*0.75), f_source, txt_rgb, W, W-200)
-        draw.text((W-80, H-50), "9/10", font=get_font(26), fill=pt_rgb)
+        draw.text((W-120, int(H*0.60)), '"', font=f_q, fill=pt_rgb)
+        # 구분선
+        draw.rectangle([(W//2-80,int(H*0.72)),(W//2+80,int(H*0.72)+3)], fill=pt_rgb)
+        f_s = get_font(32)
+        draw_text_center(draw, sub or "- 오늘의 한마디", int(H*0.75), f_s, txt_rgb, W, W-200)
+        draw.text((W-120, H-60), "9/10", font=get_font(28), fill=pt_rgb)
 
-    # ════════════════════════════════
-    # 10장: CTA (행동 유도)
-    # ════════════════════════════════
+    # ══════════════════════════
+    # 10장: CTA
+    # ══════════════════════════
     elif card_num == 10:
-        img = base.copy()
-        img = add_overlay(img, 0, 0, W, H, bg_rgb, alpha=180)
+        img = make_base(bg_image, bg_rgb)
+        img = add_overlay(img, 0, 0, W, H, bg_rgb, alpha=190)
         draw = ImageDraw.Draw(img)
-        # 상단 질문
-        f_q = get_font(52, bold=True)
-        draw_text_centered(draw, title or "도움이 되셨나요? 😊", 120, f_q, txt_rgb, W, W-100)
-        # 포인트 라인
-        draw.rectangle([(W//2-100,210),(W//2+100,216)], fill=pt_rgb)
-        # CTA 버튼 3개
-        buttons = [
-            ("💾 저장하기", int(H*0.35)),
-            ("👥 팔로우", int(H*0.52)),
-            ("💬 댓글 남기기", int(H*0.69)),
-        ]
-        for btn_text, btn_y in buttons:
-            # 버튼 박스
-            draw.rounded_rectangle(
-                [(160, btn_y),(W-160, btn_y+80)],
-                radius=40, fill=pt_rgb
-            )
+        # 상단 제목
+        f_t = get_font(52, bold=True)
+        draw_text_center(draw, title or "도움이 되셨나요? 😊", 100, f_t, txt_rgb, W, W-100)
+        draw.rectangle([(W//2-100,190),(W//2+100,196)], fill=pt_rgb)
+        # 버튼 3개
+        buttons = ["💾 저장하기", "👥 팔로우", "💬 댓글 남기기"]
+        for i, btn in enumerate(buttons):
+            by = 240 + i*180
+            draw.rounded_rectangle([(140,by),(W-140,by+90)], radius=45, fill=pt_rgb)
             f_btn = get_font(40, bold=True)
-            draw_text_centered(draw, btn_text, btn_y+20, f_btn, hex_to_rgb("#FFFFFF"), W, W-200)
+            draw_text_center(draw, btn, by+22, f_btn, white, W, W-200)
         # 계정명
-        f_brand = get_font(40, bold=True)
-        brand = card.get("부제목", "@hanasence")
-        draw_text_centered(draw, brand, int(H*0.88), f_brand, pt_rgb, W, W-100)
-        draw.text((W-80, H-50), "10/10", font=get_font(26), fill=pt_rgb)
+        brand = sub or "@hanasence"
+        f_brand = get_font(42, bold=True)
+        draw_text_center(draw, brand, int(H*0.88), f_brand, pt_rgb, W, W-100)
+        draw.text((W-120, H-60), "10/10", font=get_font(28), fill=pt_rgb)
 
     else:
-        img = base.copy()
+        img = make_base(bg_image, bg_rgb)
 
-    return img
+    return img.convert('RGB')
 
 def img_to_bytes(img):
     buf = io.BytesIO()
@@ -352,7 +404,7 @@ def create_zip(images):
         for i, img in enumerate(images):
             zf.writestr(f"card_{i+1:02d}.png", img_to_bytes(img))
     return buf.getvalue()
-   # ─────────────────────────────────────────
+    # ─────────────────────────────────────────
 # 🎛️ 사이드바
 # ─────────────────────────────────────────
 st.title("🚀 원클릭 SNS 콘텐츠 마스터")
@@ -387,16 +439,19 @@ bg_file = st.sidebar.file_uploader(
 
 bg_image = None
 if bg_file:
-    bg_image = Image.open(bg_file).convert('RGB').resize((1080, 1080))
-    st.sidebar.image(bg_image, caption="업로드된 배경 이미지", use_column_width=True)
-    st.sidebar.success("✅ 배경 이미지 적용됨!")
+    try:
+        bg_image = Image.open(bg_file).convert('RGB').resize((1080, 1080), Image.LANCZOS)
+        st.sidebar.image(bg_image, caption="업로드된 배경", use_column_width=True)
+        st.sidebar.success("✅ 배경 이미지 적용!")
+    except Exception as e:
+        st.sidebar.error(f"이미지 오류: {e}")
 
 st.sidebar.markdown("---")
 st.sidebar.header("📱 추가 생성 옵션")
-gen_shorts = st.sidebar.checkbox("🎬 쇼츠/릴스 대본", value=True)
+gen_shorts   = st.sidebar.checkbox("🎬 쇼츠/릴스 대본", value=True)
 gen_captions = st.sidebar.checkbox("📱 플랫폼별 캡션", value=True)
-gen_threads = st.sidebar.checkbox("🧵 스레드 타래", value=False)
-gen_blog = st.sidebar.checkbox("📝 블로그 요약", value=False)
+gen_threads  = st.sidebar.checkbox("🧵 스레드 타래",   value=False)
+gen_blog     = st.sidebar.checkbox("📝 블로그 요약",   value=False)
 
 # ─────────────────────────────────────────
 # 🌐 크롤링
@@ -421,9 +476,9 @@ def crawl_url(url):
             tag.decompose()
         content = ""
         for tag_name, cls in [
-            ('div', 'post-body'), ('div', 'entry-content'),
-            ('div', 'article_view'), ('div', 'se-main-container'),
-            ('div', 'wrap_body'),
+            ('div','post-body'),('div','entry-content'),
+            ('div','article_view'),('div','se-main-container'),
+            ('div','wrap_body'),
         ]:
             el = soup.find(tag_name, class_=cls)
             if el:
@@ -431,7 +486,7 @@ def crawl_url(url):
                 if len(content) > 200:
                     break
         if not content or len(content) < 200:
-            for tag_name in ['article', 'main']:
+            for tag_name in ['article','main']:
                 el = soup.find(tag_name)
                 if el:
                     content = el.get_text(separator='\n', strip=True)
@@ -517,8 +572,11 @@ if input_mode == "🔗 URL 입력 (자동 크롤링)":
                 st.success(f"✅ 완료! ({len(crawled)}자)")
             else:
                 st.error("❌ 실패. 직접 붙여넣어주세요.")
-    source_text = st.text_area("📝 내용 (수정 가능)",
-                               value=st.session_state.get('crawled_text', ''), height=200)
+    source_text = st.text_area(
+        "📝 내용 (수정 가능)",
+        value=st.session_state.get('crawled_text', ''),
+        height=200
+    )
 else:
     source_text = st.text_area("📝 원본 글 붙여넣기", height=200)
 
@@ -645,7 +703,7 @@ if 'result' in st.session_state and st.session_state['result']:
             st.success(f"✅ 총 {len(card_data)}장 생성 완료!")
             st.info(f"🎨 선택된 템플릿: **{selected_set}**")
             if bg_image:
-                st.info("🖼️ 업로드된 배경 이미지 적용됨!")
+                st.info("🖼️ 배경 이미지 적용됨!")
 
             df = pd.DataFrame(card_data)
             col_a, col_b = st.columns([3,1])
@@ -653,9 +711,11 @@ if 'result' in st.session_state and st.session_state['result']:
                 st.info("💡 CSV를 Canva 대량 제작에 업로드!")
             with col_b:
                 csv = df.to_csv(index=False).encode('utf-8-sig')
-                st.download_button("📥 CSV 다운로드", csv,
-                                  'cardnews.csv', 'text/csv',
-                                  use_container_width=True)
+                st.download_button(
+                    "📥 CSV 다운로드", csv,
+                    'cardnews.csv', 'text/csv',
+                    use_container_width=True
+                )
 
             st.markdown("---")
 
@@ -664,8 +724,13 @@ if 'result' in st.session_state and st.session_state['result']:
                     imgs = []
                     prog = st.progress(0)
                     for i, card in enumerate(card_data[:10]):
-                        img = create_card_image(i+1, card, selected_set, bg_image)
-                        imgs.append(img)
+                        try:
+                            img = create_card(i+1, card, selected_set, bg_image)
+                            imgs.append(img)
+                        except Exception as e:
+                            st.warning(f"{i+1}장 오류: {e}")
+                            imgs.append(Image.new('RGB',(1080,1080),
+                                       hex_to_rgb(TEMPLATE_SETS[selected_set]["bg"])))
                         prog.progress((i+1)/10)
                     st.session_state['generated_images'] = imgs
                 st.success("✅ 이미지 생성 완료!")
@@ -673,7 +738,6 @@ if 'result' in st.session_state and st.session_state['result']:
             if 'generated_images' in st.session_state:
                 imgs = st.session_state['generated_images']
 
-                # ZIP 다운로드
                 st.download_button(
                     "📦 전체 ZIP 다운로드 (10장)",
                     create_zip(imgs),
@@ -697,19 +761,33 @@ if 'result' in st.session_state and st.session_state['result']:
                                         use_column_width=True)
 
                                 with st.expander(f"✏️ {idx+1}장 수정"):
-                                    new_title = st.text_input("큰제목", value=card.get('큰제목',''), key=f"t_{idx}")
-                                    new_sub   = st.text_input("부제목", value=card.get('부제목',''), key=f"s_{idx}")
-                                    new_body  = st.text_input("본문",   value=card.get('본문',''),   key=f"b_{idx}")
-
+                                    new_title = st.text_input(
+                                        "큰제목",
+                                        value=card.get('큰제목',''),
+                                        key=f"t_{idx}"
+                                    )
+                                    new_sub = st.text_input(
+                                        "부제목",
+                                        value=card.get('부제목',''),
+                                        key=f"s_{idx}"
+                                    )
+                                    new_body = st.text_input(
+                                        "본문",
+                                        value=card.get('본문',''),
+                                        key=f"b_{idx}"
+                                    )
                                     if st.button(f"🔄 {idx+1}장 재생성", key=f"r_{idx}"):
                                         updated = card.copy()
                                         updated['큰제목'] = new_title
                                         updated['부제목'] = new_sub
                                         updated['본문']   = new_body
-                                        new_img = create_card_image(idx+1, updated, selected_set, bg_image)
-                                        imgs[idx] = new_img
-                                        st.session_state['generated_images'] = imgs
-                                        st.rerun()
+                                        try:
+                                            new_img = create_card(idx+1, updated, selected_set, bg_image)
+                                            imgs[idx] = new_img
+                                            st.session_state['generated_images'] = imgs
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"재생성 오류: {e}")
 
                                 st.download_button(
                                     f"📥 {idx+1}장 다운로드",
@@ -747,6 +825,7 @@ if 'result' in st.session_state and st.session_state['result']:
                         st.code(card['이미지프롬프트'])
 
             st.dataframe(df, use_container_width=True, height=400)
+
         else:
             st.error("❌ 카드 파싱 실패")
             st.info("💡 AI 원본 응답을 열어서 확인해주세요")
@@ -795,7 +874,7 @@ with st.expander("📖 사용 가이드"):
     ### 🚀 사용법
     1. **API Key** 입력 (사이드바)
     2. **템플릿 세트** 선택 (A~D)
-    3. **배경 이미지** 업로드 (선택, 1장만 올려도 10장 적용!)
+    3. **배경 이미지** 업로드 (선택, 1장만!)
     4. **URL 또는 원본 글** 입력
     5. **타깃/브랜드** 입력
     6. **생성하기** 클릭
@@ -817,4 +896,4 @@ with st.expander("📖 사용 가이드"):
     ### 📦 다운로드
     - 개별: 각 카드 아래 버튼
     - 전체: ZIP 다운로드
-    """) 
+    """)
